@@ -36,19 +36,12 @@ async def init_db():
             cooldown_horas INTEGER DEFAULT 24
         );
 
-        CREATE TABLE IF NOT EXISTS plantillas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id INTEGER,
-            nombre TEXT,
-            instrucciones TEXT,
-            valor REAL DEFAULT 0
-        );
-
         CREATE TABLE IF NOT EXISTS reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id INTEGER,
-            plantilla_id INTEGER,
             link TEXT,
+            instrucciones TEXT,
+            valor REAL DEFAULT 0,
             estado TEXT DEFAULT 'disponible',
             claimed_by INTEGER,
             claimed_at TEXT,
@@ -56,8 +49,7 @@ async def init_db():
             proof_link TEXT,
             decided_by INTEGER,
             decided_at TEXT,
-            reject_reason TEXT,
-            FOREIGN KEY (plantilla_id) REFERENCES plantillas(id)
+            reject_reason TEXT
         );
 
         CREATE TABLE IF NOT EXISTS tickets (
@@ -129,6 +121,10 @@ async def init_db():
     columnas = [c["name"] for c in await cur.fetchall()]
     if "link" not in columnas:
         await db.execute("ALTER TABLE reviews ADD COLUMN link TEXT")
+    if "instrucciones" not in columnas:
+        await db.execute("ALTER TABLE reviews ADD COLUMN instrucciones TEXT")
+    if "valor" not in columnas:
+        await db.execute("ALTER TABLE reviews ADD COLUMN valor REAL DEFAULT 0")
     await db.commit()
 
 
@@ -179,63 +175,7 @@ async def next_ticket_number(guild_id: int) -> int:
         return row["ticket_counter"]
 
 
-async def crear_plantilla(guild_id: int, nombre: str, instrucciones: str, valor: float) -> int:
-    db = await get_db()
-    cur = await db.execute(
-        "INSERT INTO plantillas (guild_id, nombre, instrucciones, valor) VALUES (?, ?, ?, ?)",
-        (guild_id, nombre, instrucciones, valor),
-    )
-    await db.commit()
-    return cur.lastrowid
-
-
-async def actualizar_plantilla(plantilla_id: int, nombre: str, instrucciones: str, valor: float):
-    db = await get_db()
-    await db.execute(
-        "UPDATE plantillas SET nombre = ?, instrucciones = ?, valor = ? WHERE id = ?",
-        (nombre, instrucciones, valor, plantilla_id),
-    )
-    await db.commit()
-
-
-async def plantilla_en_uso(plantilla_id: int) -> int:
-    db = await get_db()
-    cur = await db.execute(
-        "SELECT COUNT(*) AS c FROM reviews WHERE plantilla_id = ?", (plantilla_id,)
-    )
-    row = await cur.fetchone()
-    return row["c"]
-
-
-async def borrar_plantilla(plantilla_id: int):
-    db = await get_db()
-    await db.execute("DELETE FROM plantillas WHERE id = ?", (plantilla_id,))
-    await db.commit()
-
-
-async def listar_plantillas(guild_id: int):
-    db = await get_db()
-    cur = await db.execute(
-        "SELECT * FROM plantillas WHERE guild_id = ? ORDER BY id", (guild_id,)
-    )
-    return await cur.fetchall()
-
-
-async def ultima_plantilla(guild_id: int):
-    db = await get_db()
-    cur = await db.execute(
-        "SELECT * FROM plantillas WHERE guild_id = ? ORDER BY id DESC LIMIT 1", (guild_id,)
-    )
-    return await cur.fetchone()
-
-
-async def get_plantilla(plantilla_id: int):
-    db = await get_db()
-    cur = await db.execute("SELECT * FROM plantillas WHERE id = ?", (plantilla_id,))
-    return await cur.fetchone()
-
-
-async def agregar_stock(guild_id: int, plantilla_id: int, links: list) -> int:
+async def agregar_stock(guild_id: int, instrucciones: str, valor: float, links: list) -> int:
     async with lock:
         db = await get_db()
         cur = await db.execute(
@@ -246,8 +186,8 @@ async def agregar_stock(guild_id: int, plantilla_id: int, links: list) -> int:
         existentes = {r["link"] for r in await cur.fetchall()}
         nuevos = [l for l in dict.fromkeys(links) if l not in existentes]
         await db.executemany(
-            "INSERT INTO reviews (guild_id, plantilla_id, link, estado) VALUES (?, ?, ?, 'disponible')",
-            [(guild_id, plantilla_id, l) for l in nuevos],
+            "INSERT INTO reviews (guild_id, link, instrucciones, valor, estado) VALUES (?, ?, ?, ?, 'disponible')",
+            [(guild_id, l, instrucciones, valor) for l in nuevos],
         )
         await db.commit()
         return len(nuevos)
@@ -257,12 +197,11 @@ async def contar_stock(guild_id: int):
     db = await get_db()
     cur = await db.execute(
         """
-        SELECT p.nombre AS nombre, COUNT(*) AS cantidad
-        FROM reviews r
-        JOIN plantillas p ON p.id = r.plantilla_id
-        WHERE r.guild_id = ? AND r.estado = 'disponible'
-        GROUP BY p.id
-        ORDER BY p.id
+        SELECT instrucciones, valor, COUNT(*) AS cantidad
+        FROM reviews
+        WHERE guild_id = ? AND estado = 'disponible'
+        GROUP BY instrucciones, valor
+        ORDER BY MIN(id)
         """,
         (guild_id,),
     )
