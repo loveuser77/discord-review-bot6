@@ -13,64 +13,24 @@ from config import COLOR_INFO, COLOR_PRINCIPAL, COLOR_AVISO, COLOR_ERROR
 URL_REGEX = re.compile(r"https?://[^\s<>\"']+")
 
 
-class RestockModal(discord.ui.Modal):
-    def __init__(self, plantilla):
-        super().__init__(title="Restock de reseñas")
-        self.plantilla = plantilla
-        self.mensaje = discord.ui.TextInput(
-            label="Mensaje de restock",
-            style=discord.TextStyle.paragraph,
-            placeholder="Pega aquí los enlaces, uno por línea",
-            max_length=4000,
-        )
-        self.add_item(self.mensaje)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        links = [l.rstrip(".,;)") for l in URL_REGEX.findall(self.mensaje.value)]
-        if not links:
-            await interaction.response.send_message(
-                "No encontré ningún enlace en el mensaje.", ephemeral=True
-            )
-            return
-
-        agregados = await db.agregar_stock(interaction.guild_id, self.plantilla["id"], links)
-        repetidos = len(set(links)) - agregados
-        total = await db.total_disponibles(interaction.guild_id)
-
-        texto = f"Se agregaron {agregados} reseñas a '{self.plantilla['nombre']}'. Hay {total} disponibles."
-        if repetidos > 0:
-            texto += f" Omití {repetidos} que ya estaban en stock."
-        await interaction.response.send_message(
-            embed=discord.Embed(title="Restock realizado", description=texto, color=COLOR_INFO),
-            ephemeral=True,
-        )
-        await enviar_log(
-            interaction.guild, "Restock",
-            campos=[("Staff", interaction.user.mention), ("Agregadas", agregados),
-                    ("Plantilla", self.plantilla["nombre"])],
-        )
-
-
-class PlantillaModal(discord.ui.Modal):
-    def __init__(self, plantilla=None):
-        super().__init__(title="Editar plantilla" if plantilla else "Nueva plantilla")
-        self.plantilla = plantilla
-        self.nombre = discord.ui.TextInput(
-            label="Nombre", max_length=50,
-            default=plantilla["nombre"] if plantilla else None,
-        )
-        self.valor = discord.ui.TextInput(
-            label="Recompensa (saldo que otorga al aprobarse)", max_length=12,
-            default=fmt_monto(plantilla["valor"]) if plantilla else "0",
-        )
-        self.instrucciones = discord.ui.TextInput(
-            label="Instrucciones para el usuario",
-            style=discord.TextStyle.paragraph, max_length=1500,
-            default=plantilla["instrucciones"][:1500] if plantilla else None,
-        )
-        self.add_item(self.nombre)
-        self.add_item(self.valor)
-        self.add_item(self.instrucciones)
+class RestockModal(discord.ui.Modal, title="Restock de reseñas"):
+    instrucciones = discord.ui.TextInput(
+        label="Instrucciones para el usuario",
+        style=discord.TextStyle.paragraph,
+        placeholder="Ej: entra al link, deja 5 estrellas y un comentario",
+        max_length=1000,
+    )
+    valor = discord.ui.TextInput(
+        label="Recompensa por reseña",
+        placeholder="Ej: 2.5",
+        max_length=12,
+    )
+    enlaces = discord.ui.TextInput(
+        label="Enlaces (uno por línea)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Pega aquí los enlaces, uno por línea",
+        max_length=4000,
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -82,18 +42,31 @@ class PlantillaModal(discord.ui.Modal):
             await interaction.response.send_message("La recompensa no puede ser negativa.", ephemeral=True)
             return
 
-        nombre = self.nombre.value.strip()
-        instrucciones = self.instrucciones.value.strip()
-        if self.plantilla is None:
-            plantilla_id = await db.crear_plantilla(interaction.guild_id, nombre, instrucciones, valor)
+        links = [l.rstrip(".,;)") for l in URL_REGEX.findall(self.enlaces.value)]
+        if not links:
             await interaction.response.send_message(
-                f"Plantilla '{nombre}' creada con el número {plantilla_id}.", ephemeral=True
+                "No encontré ningún enlace en el mensaje.", ephemeral=True
             )
-        else:
-            await db.actualizar_plantilla(self.plantilla["id"], nombre, instrucciones, valor)
-            await interaction.response.send_message(
-                f"Plantilla '{nombre}' actualizada.", ephemeral=True
-            )
+            return
+
+        agregados = await db.agregar_stock(
+            interaction.guild_id, self.instrucciones.value.strip(), valor, links
+        )
+        repetidos = len(set(links)) - agregados
+        total = await db.total_disponibles(interaction.guild_id)
+
+        texto = f"Se agregaron {agregados} reseñas al stock. Hay {total} disponibles en total."
+        if repetidos > 0:
+            texto += f" Omití {repetidos} que ya estaban en stock."
+        await interaction.response.send_message(
+            embed=discord.Embed(title="Restock realizado", description=texto, color=COLOR_INFO),
+            ephemeral=True,
+        )
+        await enviar_log(
+            interaction.guild, "Restock",
+            campos=[("Staff", interaction.user.mention), ("Agregadas", agregados),
+                    ("Recompensa", fmt_monto(valor))],
+        )
 
 
 class Admin(commands.Cog):
@@ -163,73 +136,10 @@ class Admin(commands.Cog):
         embed.add_field(name="Tickets", value="Pausados" if cfg["tickets_paused"] else "Abiertos")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="plantilla-reseña", description="Crea una plantilla de reseña")
-    @es_staff()
-    async def plantilla_resena(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(PlantillaModal())
-
-    @app_commands.command(name="editar-plantilla", description="Edita una plantilla existente")
-    @app_commands.describe(id="Número de la plantilla (mira /plantillas)")
-    @es_staff()
-    async def editar_plantilla(self, interaction: discord.Interaction, id: int):
-        plantilla = await db.get_plantilla(id)
-        if plantilla is None or plantilla["guild_id"] != interaction.guild_id:
-            await interaction.response.send_message("No existe esa plantilla.", ephemeral=True)
-            return
-        await interaction.response.send_modal(PlantillaModal(plantilla))
-
-    @app_commands.command(name="borrar-plantilla", description="Borra una plantilla sin reseñas asociadas")
-    @app_commands.describe(id="Número de la plantilla")
-    @es_staff()
-    async def borrar_plantilla(self, interaction: discord.Interaction, id: int):
-        plantilla = await db.get_plantilla(id)
-        if plantilla is None or plantilla["guild_id"] != interaction.guild_id:
-            await interaction.response.send_message("No existe esa plantilla.", ephemeral=True)
-            return
-        if await db.plantilla_en_uso(id) > 0:
-            await interaction.response.send_message(
-                "Esa plantilla tiene reseñas asociadas, no se puede borrar. Puedes editarla.",
-                ephemeral=True,
-            )
-            return
-        await db.borrar_plantilla(id)
-        await interaction.response.send_message(f"Plantilla '{plantilla['nombre']}' borrada.", ephemeral=True)
-
-    @app_commands.command(name="plantillas", description="Lista las plantillas de reseña")
-    @es_staff()
-    async def plantillas(self, interaction: discord.Interaction):
-        filas = await db.listar_plantillas(interaction.guild_id)
-        if not filas:
-            await interaction.response.send_message(
-                "No hay plantillas. Crea una con /plantilla-reseña.", ephemeral=True
-            )
-            return
-        embed = discord.Embed(title="Plantillas de reseña", color=COLOR_INFO)
-        for p in filas:
-            embed.add_field(
-                name=f"#{p['id']} - {p['nombre']}",
-                value=f"Recompensa: {fmt_monto(p['valor'])}\n{p['instrucciones'][:150]}",
-                inline=False,
-            )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
     @app_commands.command(name="restock-panel", description="Abre el panel para cargar reseñas al stock")
-    @app_commands.describe(plantilla_id="Número de plantilla (opcional, por defecto la más reciente)")
     @es_staff()
-    async def restock_panel(self, interaction: discord.Interaction, plantilla_id: int = None):
-        if plantilla_id is not None:
-            plantilla = await db.get_plantilla(plantilla_id)
-            if plantilla is not None and plantilla["guild_id"] != interaction.guild_id:
-                plantilla = None
-        else:
-            plantilla = await db.ultima_plantilla(interaction.guild_id)
-
-        if plantilla is None:
-            await interaction.response.send_message(
-                "Primero crea una plantilla con /plantilla-reseña.", ephemeral=True
-            )
-            return
-        await interaction.response.send_modal(RestockModal(plantilla))
+    async def restock_panel(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(RestockModal())
 
     @app_commands.command(name="stock", description="Muestra cuántas reseñas hay disponibles")
     @app_commands.guild_only()
@@ -242,8 +152,11 @@ class Admin(commands.Cog):
         embed.add_field(name="En verificación", value=str(estados.get("pendiente_verificacion", 0)))
         if filas:
             embed.add_field(
-                name="Disponibles por plantilla",
-                value="\n".join(f"{f['nombre']}: {f['cantidad']}" for f in filas),
+                name="Detalle",
+                value="\n".join(
+                    f"{f['cantidad']}x - {fmt_monto(f['valor'])} - {f['instrucciones'][:60]}"
+                    for f in filas
+                ),
                 inline=False,
             )
         await interaction.response.send_message(embed=embed)
@@ -348,7 +261,6 @@ class Admin(commands.Cog):
                     "/panel - publicar el panel de tickets\n"
                     "/mensaje-ticket - editar el texto de bienvenida\n"
                     "/pausar-tickets - pausar o reanudar tickets\n"
-                    "/plantilla-reseña, /editar-plantilla, /borrar-plantilla, /plantillas\n"
                     "/restock-panel - cargar reseñas al stock\n"
                     "/historial, /reseña-info, /eliminar-reseña\n"
                     "/reset-cooldown, /recordatorio\n"

@@ -67,9 +67,8 @@ async def iniciar_reclamo_resena(interaction: discord.Interaction):
         )
         return
 
-    plantilla = await db.get_plantilla(review["plantilla_id"]) if review["plantilla_id"] else None
-    instrucciones = plantilla["instrucciones"] if plantilla else "Sigue las indicaciones del staff."
-    valor = plantilla["valor"] if plantilla else 0
+    instrucciones = review["instrucciones"] or "Sigue las indicaciones del staff."
+    valor = review["valor"] or 0
     cfg = await db.get_config(guild.id)
 
     embed = discord.Embed(
@@ -133,11 +132,10 @@ class EnviarPruebasModal(discord.ui.Modal):
             return
 
         review = await db.get_review(self.review_id)
-        plantilla = await db.get_plantilla(review["plantilla_id"]) if review["plantilla_id"] else None
 
         embed = discord.Embed(title=f"Verificación de reseña #{review['id']}", color=COLOR_AVISO)
         embed.add_field(name="Usuario", value=interaction.user.mention)
-        embed.add_field(name="Plantilla", value=plantilla["nombre"] if plantilla else "N/A")
+        embed.add_field(name="Recompensa", value=fmt_monto(review["valor"] or 0))
         embed.add_field(name="Ticket", value=interaction.channel.mention)
         embed.add_field(name="Reseña asignada", value=review["link"] or "N/A", inline=False)
         embed.add_field(name="Prueba enviada", value=link, inline=False)
@@ -249,8 +247,7 @@ class VerificationView(discord.ui.View):
             await interaction.response.send_message("Esta reseña ya fue procesada.", ephemeral=True)
             return
 
-        plantilla = await db.get_plantilla(review["plantilla_id"]) if review["plantilla_id"] else None
-        valor = plantilla["valor"] if plantilla else 0
+        valor = review["valor"] or 0
         saldo_nuevo = await db.get_balance(interaction.guild_id, review["claimed_by"])
         if valor > 0:
             _, saldo_nuevo = await db.ajustar_saldo(
@@ -565,8 +562,7 @@ class Reviews(commands.Cog):
                 "Esa reseña no existe o no está aprobada.", ephemeral=True
             )
             return
-        plantilla = await db.get_plantilla(review["plantilla_id"]) if review["plantilla_id"] else None
-        valor = plantilla["valor"] if plantilla else 0
+        valor = review["valor"] or 0
 
         embed = discord.Embed(title=f"Eliminar la reseña #{id}", color=COLOR_AVISO)
         embed.add_field(name="Usuario", value=f"<@{review['claimed_by']}>", inline=False)
